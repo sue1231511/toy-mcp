@@ -7,7 +7,8 @@ Toy Remote MCP - cloud relay (Velvo + KissToy, any toy the phone bridge is confi
 
 Env:
   BRIDGE_TOKEN         required. Shared secret, the bridge sends it in header X-Bridge-Token
-  MCP_KEY              optional. When set, /mcp/sse requires ?key=<MCP_KEY>
+  MCP_KEY              optional but strongly recommended. When set, /mcp/sse and /status require the key,
+                       sent as header X-API-Key, header Authorization: Bearer <key>, or query ?key=
   MAX_COMMAND_SECONDS  optional. Per-command duration ceiling in seconds (default 600)
 """
 
@@ -21,7 +22,8 @@ from contextlib import asynccontextmanager
 from typing import Any, Optional
 from urllib.parse import parse_qs
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import JSONResponse
 from mcp.server.fastmcp import FastMCP
 from mcp.server.sse import SseServerTransport
 
@@ -406,7 +408,11 @@ async def ping():
 
 
 @app.get("/status")
-async def status():
+async def status(request: Request):
+    # 小桥在不在线 = 主人此刻是不是在用玩具，属于隐私；设了 MCP_KEY 就和 MCP 一样要钥匙
+    if MCP_KEY and not _token_ok(_request_key(request.scope), MCP_KEY):
+        log.warning("Status refused: bad or missing key client=%s %s", request.client, _key_sources(request.scope))
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
     return {"bridge_connected": bridge_ws is not None, "bridge_token_configured": bool(BRIDGE_TOKEN)}
 
 
@@ -496,6 +502,30 @@ def _query_key(scope: dict) -> str:
     return values[0] if values else ""
 
 
+def _header(scope: dict, name: bytes) -> str:
+    for k, v in scope.get("headers", []):
+        if k.lower() == name:
+            return v.decode("latin-1").strip()
+    return ""
+
+
+def _bearer(scope: dict) -> str:
+    auth = _header(scope, b"authorization")
+    return auth[7:].strip() if auth.lower().startswith("bearer ") else ""
+
+
+def _request_key(scope: dict) -> str:
+    """MCP key from header X-API-Key, then Authorization: Bearer, then ?key= (kept for clients that can only set a URL).
+    Headers are preferred: a key in the URL can end up in proxy access logs."""
+    return _header(scope, b"x-api-key") or _bearer(scope) or _query_key(scope)
+
+
+def _key_sources(scope: dict) -> str:
+    """Which credential kinds a refused request carried (never the values)."""
+    return "has_x_api_key={} has_bearer={} has_query_key={}".format(
+        bool(_header(scope, b"x-api-key")), bool(_bearer(scope)), bool(_query_key(scope)))
+
+
 async def _reject(send, status_code: int, text: str) -> None:
     await send(
         {
@@ -517,8 +547,8 @@ class MCPMiddleware:
             method = scope.get("method", "GET")
 
             if path == "/mcp/sse" and method == "GET":
-                if MCP_KEY and not _token_ok(_query_key(scope), MCP_KEY):
-                    log.warning("MCP SSE refused: bad or missing key client=%s", scope.get("client"))
+                if MCP_KEY and not _token_ok(_request_key(scope), MCP_KEY):
+                    log.warning("MCP SSE refused: bad or missing key client=%s %s", scope.get("client"), _key_sources(scope))
                     await _reject(send, 401, "unauthorized")
                     return
                 try:

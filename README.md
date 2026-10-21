@@ -27,7 +27,7 @@ uvicorn main:app --host 0.0.0.0 --port 8080 --no-access-log
 | 环境变量 | 说明 |
 |---|---|
 | `BRIDGE_TOKEN` | **必填**。手机小桥连上来用的密钥，两边填一样的 |
-| `MCP_KEY` | **强烈建议必填**。设了以后 MCP 地址要带 `?key=<MCP_KEY>` 才能连。**不设的话，任何知道你地址的人都能控制你的玩具** |
+| `MCP_KEY` | **强烈建议必填**。设了以后连 MCP 和看 `/status` 都要带这把钥匙（带法见第三节）。**不设的话，任何知道你地址的人都能控制你的玩具** |
 | `MAX_COMMAND_SECONDS` | 每条指令最长多少秒，默认 `600` |
 
 密钥用足够长的随机字符串，比如 `openssl rand -hex 32` 生成。
@@ -38,7 +38,7 @@ uvicorn main:app --host 0.0.0.0 --port 8080 --no-access-log
 - 小桥：`/ws`
 - 健康检查：`/ping`、`/status`
 
-注意：`/status` 不需要密钥，会显示小桥在不在线。不想让别人知道你什么时候在用，就别把域名告诉别人。
+`/ping` 不需要钥匙，只回一个 ok，给平台做健康检查用。`/status` 会显示小桥在不在线，等于暴露你什么时候在用，所以设了 `MCP_KEY` 以后它也要钥匙。
 
 ---
 
@@ -84,7 +84,7 @@ sh ~/toy-mcp/bridge/start.sh
 
 用完在 Termux 里按 `CTRL` + `c`，小桥会先把所有玩具停下再退出。
 
-浏览器打开 `https://你的中转域名/status`，`"bridge_connected": true` 就是小桥在线。
+浏览器打开 `https://你的中转域名/status?key=<你的 MCP_KEY>`，`"bridge_connected": true` 就是小桥在线。看完把这个地址从浏览器历史里删掉，别让钥匙留在里面。
 
 ### 小桥的设置（`bridge.env`）
 
@@ -114,13 +114,31 @@ sh ~/toy-mcp/bridge/start.sh
 
 ## 三、接到 AI 客户端
 
-MCP 地址：
+MCP 地址：`https://你的中转域名/mcp/sse`，传输方式选 **SSE**，认证选**不需要登录**。
 
-```
-https://你的中转域名/mcp/sse?key=<你的 MCP_KEY>
-```
+钥匙三种带法，中转都认，按客户端支持的选，**能用请求头就用请求头**：
 
-传输方式选 **SSE**，认证选**不需要登录**。
+| 带法 | 写法 |
+|---|---|
+| 请求头 | `X-API-Key: <你的 MCP_KEY>` |
+| 请求头 | `Authorization: Bearer <你的 MCP_KEY>` |
+| 地址参数 | `https://你的中转域名/mcp/sse?key=<你的 MCP_KEY>` |
+
+钥匙放在地址里，可能被平台的反向代理原样记进访问日志，只在客户端填不了请求头时用。
+
+支持 JSON 配置的客户端：
+
+```json
+{
+  "mcpServers": {
+    "toy": {
+      "type": "sse",
+      "url": "https://你的中转域名/mcp/sse",
+      "headers": { "X-API-Key": "<你的 MCP_KEY>" }
+    }
+  }
+}
+```
 
 ### 工具
 
@@ -141,6 +159,7 @@ Lovense Velvo 专用（老接口，保留兼容）：`velvo_status`、`velvo_vib
 
 | 看到什么 | 原因 | 怎么办 |
 |---|---|---|
+| 客户端连不上，返回 `401` | MCP 钥匙没带上或者不对 | 中转日志里那行 `refused` 后面写着这次带了哪种钥匙（`has_x_api_key` / `has_bearer` / `has_query_key`），对照着查 |
 | 小桥日志 `HTTP 403` | 手机和云端的 `BRIDGE_TOKEN` 不一样 | 两边改成一样；平台环境变量的值只填等号后面的部分 |
 | 一直 `Reconnecting to Intiface` | Intiface 服务没开 | 打开 Intiface 点播放键 |
 | 没有 `Device online` | 玩具没开机，或者被它自家 App 连着 | 打开玩具，关掉其他连着它的 App |
